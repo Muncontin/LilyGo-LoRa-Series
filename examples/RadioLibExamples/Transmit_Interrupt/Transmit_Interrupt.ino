@@ -13,6 +13,7 @@
 
 #include "LoRaBoards.h"
 #include <RadioLib.h>
+#include <mqttservice.h>
 
 #if     defined(USING_SX1276)
 #ifndef CONFIG_RADIO_FREQ
@@ -114,14 +115,16 @@ SX1268 radio = new Module(RADIO_CS_PIN, RADIO_DIO1_PIN, RADIO_RST_PIN, RADIO_BUS
 LR1121 radio = new Module(RADIO_CS_PIN, RADIO_DIO9_PIN, RADIO_RST_PIN, RADIO_BUSY_PIN);
 #endif
 
-void drawMain();
-
 // save transmission state between loops
 static int transmissionState = RADIOLIB_ERR_NONE;
 // flag to indicate that a packet was sent
 static volatile bool transmittedFlag = false;
+static volatile bool receivedFlag = false;
 static uint32_t counter = 0;
 static String payload;
+static String rssi = "0dBm";
+static String snr = "0dB";
+
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -133,10 +136,15 @@ void setFlag(void)
     transmittedFlag = true;
 }
 
+void setReceivedFlag(void) 
+{
+    receivedFlag = true;
+}
+
 void setup()
 {
     setupBoards();
-
+    mqttsetup();
     // When the power is turned on, a delay is required.
     delay(1500);
 
@@ -162,6 +170,11 @@ void setup()
     // set the function that will be called
     // when packet transmission is finished
     radio.setPacketSentAction(setFlag);
+
+    // set the function that will be called
+    // when new packet is received
+    radio.setPacketReceivedAction(setReceivedFlag);
+
 
     /*
     *   Sets carrier frequency.
@@ -341,11 +354,21 @@ void setup()
     */
     delay(1000);
 
-    drawMain();
+}
+
+void sendLoraMessage() {
+
 }
 
 void loop()
 {
+    //MQTT
+    if (!client.connected()) {
+        reconnect();
+    }
+    client.loop();
+
+    // LoRa
     // check if the previous transmission finished
     if (transmittedFlag) {
 
@@ -368,8 +391,9 @@ void loop()
             Serial.println(transmissionState);
         }
 
+        // **NEW: Publish the same payload over MQTT**
+        client.publish("ttgo/network", payload.c_str());  // Sends to MQTT topic
 
-        drawMain();
         // wait a second before transmitting again
         delay(1000);
 
@@ -387,27 +411,57 @@ void loop()
         */
 
     }
-}
 
+    if(receivedFlag) {
+        // reset flag
+        receivedFlag = false;
 
-void drawMain()
-{
-    if (u8g2) {
-        u8g2->clearBuffer();
-        u8g2->drawRFrame(0, 0, 128, 64, 5);
+        // you can read received data as an Arduino String
+        int state = radio.readData(payload);
 
-        u8g2->setFont(u8g2_font_pxplusibmvga8_mr);
-        u8g2->setCursor(22, 25);
-        u8g2->print("TX:");
-        u8g2->setCursor(22, 40);
-        u8g2->print("STATE:");
+        // you can also read received data as byte array
+        /*
+            byte byteArr[8];
+            int state = radio.readData(byteArr, 8);
+        */
 
-        u8g2->setFont(u8g2_font_crox1h_tr);
-        u8g2->setCursor( U8G2_HOR_ALIGN_RIGHT(payload.c_str()) - 21, 25 );
-        u8g2->print(payload);
-        String state = transmissionState == RADIOLIB_ERR_NONE ? "NONE" : String(transmissionState);
-        u8g2->setCursor( U8G2_HOR_ALIGN_RIGHT(state.c_str()) -  21, 40 );
-        u8g2->print(state);
-        u8g2->sendBuffer();
+        flashLed();
+
+        if (state == RADIOLIB_ERR_NONE) {
+
+            rssi = String(radio.getRSSI()) + "dBm";
+            snr = String(radio.getSNR()) + "dB";
+
+            // packet was successfully received
+            Serial.println(F("Radio Received packet!"));
+
+            // print data of the packet
+            Serial.print(F("Radio Data:\t\t"));
+            Serial.println(payload);
+
+            // print RSSI (Received Signal Strength Indicator)
+            Serial.print(F("Radio RSSI:\t\t"));
+            Serial.println(rssi);
+
+            // print SNR (Signal-to-Noise Ratio)
+            Serial.print(F("Radio SNR:\t\t"));
+            Serial.println(snr);
+
+            // **NEW: Publish the same payload over MQTT**
+            client.publish("ttgo/network", payload.c_str());  // Sends to MQTT topic
+
+        } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+            // packet was received, but is malformed
+            Serial.println(F("CRC error!"));
+        } else {
+            // some other error occurred
+            Serial.print(F("failed, code "));
+            Serial.println(state);
+        }
+
+        // put module back to listen mode
+        radio.startReceive();
     }
 }
+
+
