@@ -35,6 +35,12 @@ void setupWifi() {
     }
 }
 
+void publishMessage(String message) {
+    // **NEW: Publish the same payload over MQTT**
+    client.publish("ttgo/network", message.c_str());  // Sends to MQTT topic
+}
+
+// Receive subscribed messages
 void callback(char* topic, byte* payload, unsigned int length) {
     if (strcmp(topic, "ttgo/network") == 0) {
         Serial.printf("Waiting on message received");

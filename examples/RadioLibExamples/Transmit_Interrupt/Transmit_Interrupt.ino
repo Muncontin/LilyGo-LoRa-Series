@@ -14,6 +14,8 @@
 #include "LoRaBoards.h"
 #include <RadioLib.h>
 #include <mqttservice.h>
+#include <button_handler.h>
+#define BUTTON_PIN 38
 
 #if     defined(USING_SX1276)
 #ifndef CONFIG_RADIO_FREQ
@@ -41,13 +43,13 @@ SX1278 radio = new Module(RADIO_CS_PIN, RADIO_DIO0_PIN, RADIO_RST_PIN, RADIO_DIO
 
 #elif   defined(USING_SX1262)
 #ifndef CONFIG_RADIO_FREQ
-#define CONFIG_RADIO_FREQ           850.0
+#define CONFIG_RADIO_FREQ           923.0
 #endif
 #ifndef CONFIG_RADIO_OUTPUT_POWER
-#define CONFIG_RADIO_OUTPUT_POWER   22
+#define CONFIG_RADIO_OUTPUT_POWER   16 //og 16
 #endif
 #ifndef CONFIG_RADIO_BW
-#define CONFIG_RADIO_BW             125.0
+#define CONFIG_RADIO_BW             125.0 //og 125.0
 #endif
 
 SX1262 radio = new Module(RADIO_CS_PIN, RADIO_DIO1_PIN, RADIO_RST_PIN, RADIO_BUSY_PIN);
@@ -120,8 +122,9 @@ static int transmissionState = RADIOLIB_ERR_NONE;
 // flag to indicate that a packet was sent
 static volatile bool transmittedFlag = false;
 static volatile bool receivedFlag = false;
-static uint32_t counter = 0;
+static uint32_t counter = 10000;
 static String payload;
+static String deviceID;
 static String rssi = "0dBm";
 static String snr = "0dB";
 
@@ -141,10 +144,22 @@ void setReceivedFlag(void)
     receivedFlag = true;
 }
 
+String idGenerator() {
+    uint64_t chipId = ESP.getEfuseMac();  // Get ESP32's unique MAC address
+    return "ttgo-" + String((uint32_t)(chipId >> 32), HEX) + String((uint32_t)chipId, HEX);
+}
+
 void setup()
 {
     setupBoards();
     mqttsetup();
+      // Setup the button pin and attach the interrupt
+    pinMode(BUTTON_PIN, INPUT_PULLUP); // Assuming active LOW button with pull-up resistor
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, FALLING);
+
+    deviceID = idGenerator();
+    Serial.println("Generated device ID: " + deviceID);
+
     // When the power is turned on, a delay is required.
     delay(1500);
 
@@ -209,7 +224,7 @@ void setup()
     * SX1280        :  Allowed values range from 5 to 12.
     * LR1121        :  Allowed values range from 5 to 12.
     * * * */
-    if (radio.setSpreadingFactor(12) == RADIOLIB_ERR_INVALID_SPREADING_FACTOR) {
+    if (radio.setSpreadingFactor(7) == RADIOLIB_ERR_INVALID_SPREADING_FACTOR) {
         Serial.println(F("Selected spreading factor is invalid for this module!"));
         while (true);
     }
@@ -356,12 +371,92 @@ void setup()
 
 }
 
-void sendLoraMessage() {
+// void sendLoraMessage() {
+//     payload = "#" + String(counter++);
 
+//     // reset flag
+//     transmittedFlag = false;
+//     receivedFlag = true;
+
+//     flashLed();
+
+
+//     if (transmissionState == RADIOLIB_ERR_NONE) {
+//         // packet was successfully sent
+//         Serial.println(F("transmission finished!"));
+//         // NOTE: when using interrupt-driven transmit method,
+//         //       it is not possible to automatically measure
+//         //       transmission data rate using getDataRate()
+//     } else {
+//         Serial.print(F("failed, code "));
+//         Serial.println(transmissionState);
+//     }
+
+//     // **NEW: Publish the same payload over MQTT**
+//     client.publish("ttgo/network", payload.c_str());  // Sends to MQTT topic
+
+//     // wait a second before transmitting again
+//     delay(1000);
+
+//     // send another one
+//     Serial.print(F("Radio Sending another packet ... "));
+
+//     // you can transmit C-string or Arduino string up to
+//     // 256 characters long
+//     transmissionState = radio.startTransmit(payload);
+//     // you can also transmit byte array up to 256 bytes long
+//     /*
+//       byte byteArr[] = {0x01, 0x23, 0x45, 0x67,
+//                         0x89, 0xAB, 0xCD, 0xEF};
+//       int state = radio.startTransmit(byteArr, 8);
+//     */
+// }
+
+
+
+// Function to send a LoRa message "hello from ttgo"
+void sendLoraMessage() {
+    // Set payload to our desired message
+    //payload = deviceID;
+    payload = "#" + deviceID + " | " + String(counter++);
+
+    // Reset transmitted flag before sending
+    transmittedFlag = false;
+    
+    // Flash an LED to indicate activity (if implemented)
+    flashLed();
+    
+    // Start transmission with the given payload
+    int transmissionState = radio.startTransmit(payload.c_str());
+    
+    if (transmissionState == RADIOLIB_ERR_NONE) {
+      Serial.println(F("Transmission finished!"));
+      Serial.println(payload);
+      // Optionally, publish the payload over MQTT as well
+      client.publish("ttgo/network", payload.c_str());
+    } else {
+      Serial.print(F("Transmission failed, code "));
+      Serial.println(transmissionState);
+    }
+
+    payload = "";
+    
+    // Optionally add a delay before next transmission (if needed)
+    delay(1000);
+    setReceivedFlag();
 }
+  
 
 void loop()
 {
+    // Process button press if the flag is set
+    if (buttonPressed) {
+        buttonPressed = false;  // Clear the flag
+        Serial.println("Button Pressed on IO38!");
+        setFlag();
+        // Insert any additional button press logic here
+    }
+  
     //MQTT
     if (!client.connected()) {
         reconnect();
@@ -371,53 +466,17 @@ void loop()
     // LoRa
     // check if the previous transmission finished
     if (transmittedFlag) {
-
-        payload = "#" + String(counter++);
-
-        // reset flag
-        transmittedFlag = false;
-
-        flashLed();
-
-
-        if (transmissionState == RADIOLIB_ERR_NONE) {
-            // packet was successfully sent
-            Serial.println(F("transmission finished!"));
-            // NOTE: when using interrupt-driven transmit method,
-            //       it is not possible to automatically measure
-            //       transmission data rate using getDataRate()
-        } else {
-            Serial.print(F("failed, code "));
-            Serial.println(transmissionState);
-        }
-
-        // **NEW: Publish the same payload over MQTT**
-        client.publish("ttgo/network", payload.c_str());  // Sends to MQTT topic
-
-        // wait a second before transmitting again
-        delay(1000);
-
-        // send another one
-        Serial.print(F("Radio Sending another packet ... "));
-
-        // you can transmit C-string or Arduino string up to
-        // 256 characters long
-        transmissionState = radio.startTransmit(payload);
-        // you can also transmit byte array up to 256 bytes long
-        /*
-          byte byteArr[] = {0x01, 0x23, 0x45, 0x67,
-                            0x89, 0xAB, 0xCD, 0xEF};
-          int state = radio.startTransmit(byteArr, 8);
-        */
-
+        sendLoraMessage();
     }
 
     if(receivedFlag) {
         // reset flag
-        receivedFlag = false;
+        receivedFlag = false; //Ensures that the packet is only read once
+
+        String incoming;
 
         // you can read received data as an Arduino String
-        int state = radio.readData(payload);
+        int state = radio.readData(incoming);
 
         // you can also read received data as byte array
         /*
@@ -432,23 +491,31 @@ void loop()
             rssi = String(radio.getRSSI()) + "dBm";
             snr = String(radio.getSNR()) + "dB";
 
-            // packet was successfully received
-            Serial.println(F("Radio Received packet!"));
+            String senderID = incoming.substring(incoming.indexOf("ttgo-"));
+            
+            if (senderID == deviceID) {
+                Serial.println("Ignoring self-received message");
+            } else if (incoming == "") {
+                Serial.println("Ignoring empty message");
+            } else {
+                // packet was successfully received
+                Serial.println(F("Radio Received packet!"));
 
-            // print data of the packet
-            Serial.print(F("Radio Data:\t\t"));
-            Serial.println(payload);
+                // print data of the packet
+                Serial.print(F("Radio Data:\t\t"));
+                Serial.println(incoming);
 
-            // print RSSI (Received Signal Strength Indicator)
-            Serial.print(F("Radio RSSI:\t\t"));
-            Serial.println(rssi);
+                // print RSSI (Received Signal Strength Indicator)
+                Serial.print(F("Radio RSSI:\t\t"));
+                Serial.println(rssi);
 
-            // print SNR (Signal-to-Noise Ratio)
-            Serial.print(F("Radio SNR:\t\t"));
-            Serial.println(snr);
+                // print SNR (Signal-to-Noise Ratio)
+                Serial.print(F("Radio SNR:\t\t"));
+                Serial.println(snr);
 
-            // **NEW: Publish the same payload over MQTT**
-            client.publish("ttgo/network", payload.c_str());  // Sends to MQTT topic
+                //Publish
+                publishMessage(incoming);
+            }
 
         } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
             // packet was received, but is malformed
@@ -459,7 +526,6 @@ void loop()
             Serial.println(state);
         }
 
-        // put module back to listen mode
         radio.startReceive();
     }
 }
