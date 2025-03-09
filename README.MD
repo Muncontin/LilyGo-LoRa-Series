@@ -4,7 +4,7 @@
 
 ## News:
 
-<h1 align = "center">Forked this for IoT project, relevant codes are in examples/RadioLibExamples/Transmit_Interrupt</h1>
+<h1 align = "center">Forked this for IoT project, relevant codes are in examples/RadioLibExamples/Transmit_ Interrupt</h1>
 
 - This warehouse currently only maintains the version of LilyGo that is on sale , For the LilyGo discontinued version of the LoRa board, please jump to [Archive package](https://github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series/releases/tag/v0.0.1) to download
 - Arduino IDE users need to configure the board to be used in the <utilities.h> file in the sketch directory before using the example. The <utilities.h> file contains the pin definitions of the board. If you do not select it, an error will occur during compilation.
