@@ -1,9 +1,9 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-const char* ssid = "Chocolate";
-const char* password = "bunnymagpie0520";
-const char* mqtt_server = "192.168.86.153";  // Replace with your broker's IP
+const char* ssid = "DANIELS_PC_2300";
+const char* password = "%g3D2085";
+const char* mqtt_server = "192.168.0.130";  // Replace with your broker's IP
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -29,6 +29,7 @@ void mqttsetup() {
 // }
 
 void setupWifi() {
+    Serial.printf("Connecting to Wifi on %s %s", ssid, password);
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
