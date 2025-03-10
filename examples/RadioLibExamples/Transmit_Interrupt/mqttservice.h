@@ -1,8 +1,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-const char* ssid = "wifiname";
-const char* password = "wifipassword";
+const char* ssid = "Chocolate";
+const char* password = "bunnymagpie0520";
 const char* mqtt_server = "192.168.86.153";  // Replace with your broker's IP
 
 WiFiClient espClient;

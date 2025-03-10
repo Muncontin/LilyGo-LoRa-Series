@@ -4,10 +4,9 @@
 
 struct RouteEntry {
     String destination;  // Destination Node ID
-    String nextHop;      // Next Hop Node ID
-    int distance;        // Hop count to destination
-    int spreadingFactor; // SF used for this route
-    unsigned long expiryTime; // Expiration time for the route
+    String nextHop;      // Next hop towards destination
+    int hopCount;        // Number of hops to reach destination
+    unsigned long expiryTime; // Timestamp to remove old routes
 };
 
 RouteEntry routingTable[MAX_ROUTES];  // Routing table

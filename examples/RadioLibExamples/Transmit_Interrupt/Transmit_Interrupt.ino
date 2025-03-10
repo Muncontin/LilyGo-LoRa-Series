@@ -16,6 +16,7 @@
 #include <mqttservice.h>
 #include <button_handler.h>
 #include <loramesh.h>
+#include <queue>
 #define BUTTON_PIN 38
 
 #if     defined(USING_SX1276)
@@ -122,24 +123,15 @@ LR1121 radio = new Module(RADIO_CS_PIN, RADIO_DIO9_PIN, RADIO_RST_PIN, RADIO_BUS
 static int transmissionState = RADIOLIB_ERR_NONE;
 static volatile bool transmittedFlag = false;
 static volatile bool receivedFlag = false;
+static volatile bool isCorrupted = false;
 static uint32_t counter = 10000;
 static String payload;
+static String incoming;
 static String deviceID;
 static String rssi = "0dBm";
 static String snr = "0dB";
-int currentSF = 7; // Default to SF7
 unsigned long lastRDPTime = 0; //Route Discovery packet
 const unsigned long RDP_INTERVAL = 30000;  // 30s interval
-
-#define MAX_NEIGHBORS 20  // Max number of tracked neighbors
-
-struct NeighborEntry {
-    String neighborID;
-    int bestSF;
-};
-
-NeighborEntry neighborTable[MAX_NEIGHBORS];
-int neighborCount = 0;
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -373,7 +365,6 @@ void setup()
     // 256 characters long
     //transmissionState = radio.startTransmit(String(counter).c_str());
     broadcastRouteUpdate();
-    printNeighbors();
 
     // you can also transmit byte array up to 256 bytes long
     /*
@@ -385,162 +376,99 @@ void setup()
 
 }
 
-void printNeighbors() {
-    Serial.println("\nNeighbor List:");
-    Serial.println("-----------------------------------");
-    Serial.println("Neighbor ID       | SF ");
-    Serial.println("-----------------------------------");
+void printRoutingTable() {
+    Serial.println("\nRouting Table:");
+    Serial.println("-------------------------------------------------");
+    Serial.println("Destination       | Next Hop        | Hops ");
+    Serial.println("-------------------------------------------------");
 
-    if (neighborCount == 0) {
-        Serial.println("No neighbors discovered yet.");
-        Serial.println("-----------------------------------\n");
+    if (routeCount == 0) {
+        Serial.println("No routes discovered yet.");
+        Serial.println("-------------------------------------------------\n");
         return;
     }
 
-    for (int i = 0; i < neighborCount; i++) {
-        Serial.print(neighborTable[i].neighborID);
-        Serial.print("  | SF");
-        Serial.println(neighborTable[i].bestSF);
+    for (int i = 0; i < routeCount; i++) {
+        Serial.print(routingTable[i].destination);
+        Serial.print("  | ");
+        Serial.print(routingTable[i].nextHop);
+        Serial.print("  | ");
+        Serial.println(routingTable[i].hopCount);
     }
 
-    Serial.println("-----------------------------------\n");
+    Serial.println("-------------------------------------------------\n");
 }
 
 
 void broadcastRouteUpdate() {
     // Periodically sends a routing discovery packet to map out the mash network
-    //RDP|<SenderID>,<SF>|<Destination1,Distance1,SF1>|<Destination2,Distance2,SF2>|...
-
-    int bestSF = findBestNeighborSF();  // Select the best SF from known neighbors
-
-    if (bestSF == -1) bestSF = 7;  // Default to SF7 if no neighbors exist
-
-    radio.setSpreadingFactor(bestSF);  // Set the best SF
-    currentSF = bestSF;
-
-    Serial.print("Broadcasting RDP at SF");
-    Serial.println(bestSF);
-
+    //RDP|<SenderID>
+    
+    Serial.print("Broadcasting RDP");
     // Advertise the existence of this node to all neighbors
-    String routeMessage = "RDP|" + deviceID + "," + String(bestSF);
-
-    // for (int i = 0; i < routeCount; i++) {
-    //     routeMessage += "|" + routingTable[i].destination + "," + 
-    //                     String(routingTable[i].distance) + "," + 
-    //                     String(routingTable[i].spreadingFactor);
-    // }
+    String routeMessage = "RDP|" + deviceID;
 
     sendLoraMessage(routeMessage);
-}
-
-int findBestNeighborSF() {
-    if (neighborCount == 0) return -1;  // No neighbors stored yet
-
-    int bestSF = 12;  // Start with the highest SF (worst case)
-
-    for (int i = 0; i < neighborCount; i++) {
-        if (neighborTable[i].bestSF < bestSF) {
-            bestSF = neighborTable[i].bestSF;
-        }
-    }
-
-    return bestSF;
 }
 
 void processRouteUpdate(String payload) {
     if (!payload.startsWith("RDP|")) return; // Ignore non-RDP messages
 
-    int commaPos = payload.indexOf(",", 4);
-    if (commaPos == -1) {
-        Serial.println("Error: Invalid RDP format (missing SF).");
-        return;
-    }
+    String senderID = payload.substring(4); // Extract sender ID
 
-    // Extract sender ID and SF
-    String senderID = payload.substring(4, commaPos);
-    int senderSF = payload.substring(commaPos + 1).toInt();
+    // Ensure we are not processing our own broadcast
+    if (senderID == deviceID && senderID.length() != 17) return;
 
-    // Ignore messages from itself
-    if (senderID == deviceID) {
-        Serial.println("Ignoring self-received RDP.");
-        return;
-    }
+    // Update routing table (store sender as a direct neighbor with hop count 1)
+    updateRoutingTable(senderID, senderID, 1);
 
-    if (senderSF < 7 || senderSF > 12) { // Ensure SF is within valid range
-        Serial.println("Error: Invalid SF value in RDP message.");
-        return;
-    }
-
-    // Save/update SF for this neighbor
-    updateNeighborSF(senderID, senderSF);
-
-    Serial.print("Updated SF for ");
+    Serial.print("Added route: ");
     Serial.print(senderID);
-    Serial.print(" to SF");
-    Serial.println(senderSF);
+    Serial.println(" via " + senderID);
+
+    printRoutingTable();
+
+    // Immediately send an acknowledgment reply
+    String replyMessage = "RDP_ACK|" + deviceID;
+    sendLoraMessage(replyMessage);
 }
 
-
-// Updates a routing table
-void updateNeighborSF(String neighborID, int sf) {
-    for (int i = 0; i < neighborCount; i++) {
-        if (neighborTable[i].neighborID == neighborID) {
-            // Update SF if different
-            if (neighborTable[i].bestSF != sf) {
-                neighborTable[i].bestSF = sf;
-                Serial.print("Updated stored SF for ");
-                Serial.print(neighborID);
-                Serial.print(" to SF");
-                Serial.println(sf);
+void updateRoutingTable(String dest, String nextHop, int hops) {
+    for (int i = 0; i < routeCount; i++) {
+        if (routingTable[i].destination == dest) {
+            if (hops < routingTable[i].hopCount) {  // Update if fewer hops
+                routingTable[i].nextHop = nextHop;
+                routingTable[i].hopCount = hops;
+                routingTable[i].expiryTime = millis() + 300000;  // Expire in 5 mins
             }
             return;
         }
     }
 
-    // Add new neighbor if space available
-    if (neighborCount < MAX_NEIGHBORS) {
-        neighborTable[neighborCount].neighborID = neighborID;
-        neighborTable[neighborCount].bestSF = sf;
-        neighborCount++;
-        Serial.print("Added new neighbor ");
-        Serial.print(neighborID);
-        Serial.print(" with SF");
-        Serial.println(sf);
-    } else {
-        Serial.println("Neighbor table full, cannot add new neighbor.");
+    if (routeCount < MAX_ROUTES) {
+        routingTable[routeCount] = {dest, nextHop, hops, millis() + 300000};
+        routeCount++;
     }
 }
 
-//Adjust spreading factor based on the RSSI and SNR values
-void adjustSpreadingFactor(float rssiValue, float snrValue) {
-
-    // Select SF based on RSSI & SNR
-    if (rssiValue < -125 || snrValue < 0) {
-        currentSF = 12; // Very weak signal, maximize range but slowest
-    } else if (rssiValue < -120 || snrValue < 1) {
-        currentSF = 11; // Weak signal, increase SF for stability
-    } else if (rssiValue < -110 || snrValue < 2) {
-        currentSF = 10; // Moderate signal, some noise
-    } else if (rssiValue < -100 || snrValue < 4) {
-        currentSF = 9; // Medium range, good balance
-    } else if (rssiValue < -90 || snrValue < 6) {
-        currentSF = 8; // Strong link, optimize for speed
-    } else {
-        currentSF = 7; // Very strong, fastest transmission
+bool isValidMessage(String message) {
+    for (int i=0; i<message.length(); i++) {
+        char c = message.charAt(i);
+        if (c <32 || c > 126)  { //ASCII printable range
+            return false;
+        } 
     }
-
-    // Apply the new spreading factor dynamically
-    if (radio.setSpreadingFactor(currentSF) == RADIOLIB_ERR_NONE) {
-        Serial.print("Adjusted Spreading Factor to SF");
-        Serial.println(currentSF);
-    } else {
-        Serial.println("SF adjustment failed!");
-    }
+    return true;
 }
 
 // Function to send a LoRa message "hello from ttgo"
 void sendLoraMessage(String message) {
-    
+
+    int rssi = radio.getRSSI();
+
+
+    radio.standby();
+
     // Reset transmitted flag before sending
     transmittedFlag = false;
     
@@ -569,43 +497,12 @@ void sendLoraMessage(String message) {
     radio.startReceive();
 }
 
-void loop()
-{
-    unsigned long currentTime = millis();
-
-    // Send RDP only if the interval has passed (currently every 30s)
-    if (currentTime - lastRDPTime >= RDP_INTERVAL) {
-        lastRDPTime = currentTime;
-        broadcastRouteUpdate();
-        printNeighbors();
-    }
-  
-    // Process button press if the flag is set
-    if (buttonPressed) {
-        buttonPressed = false;  // Clear the flag
-        Serial.println("Button Pressed on IO38!");
-        setFlag();
-    }
-  
-    //MQTT
-    if (!client.connected()) {
-        reconnect();
-    }
-    client.loop();
-
-    // LoRa
-    // check if the previous transmission finished
-    if (transmittedFlag) {
-        // Set payload to our desired message
-        payload = deviceID + " | " + String(counter++);
-        sendLoraMessage(payload);
-    }
-
+void processIncomingMessage() {
     if(receivedFlag) {
         // reset flag
         receivedFlag = false; //Ensures that the packet is only read once
 
-        String incoming;
+        flashLed();
 
         // you can read received data as an Arduino String
         int state = radio.readData(incoming);
@@ -615,8 +512,6 @@ void loop()
             byte byteArr[8];
             int state = radio.readData(byteArr, 8);
         */
-
-        flashLed();
 
         if (state == RADIOLIB_ERR_NONE) {
 
@@ -628,29 +523,38 @@ void loop()
             // Check if the message is completely empty
             if (incoming == "" || incoming.length() < 5) { 
                 Serial.println("Ignoring empty or very short message");
+                radio.startReceive();
                 return;
             }
 
             // Check if the message contains non-printable characters
-            bool isCorrupted = false;
-            for (int i = 0; i < incoming.length(); i++) {
-                char c = incoming.charAt(i);
-                if (c < 32 || c > 126) { // ASCII printable range
-                    isCorrupted = true;
-                    break;
-                }
-            }
-
-            if (isCorrupted) {
-                Serial.println("Warning: Garbled message detected! Possible corruption.");
-                Serial.print("Raw Data: ");
-                Serial.println(incoming);
+            if (!isValidMessage(incoming)) {
+                Serial.println("Error: Garbled message detected, ignoring.");
+                radio.startReceive();
                 return;
             }
 
             if (incoming.startsWith("RDP|")) {
                 processRouteUpdate(incoming);
+                radio.startReceive();
                 return; //skip as its routing update
+            }
+
+            if (incoming.startsWith("RDP_ACK|")) {
+                String senderID = incoming.substring(8); // Extract sender ID
+
+                if (senderID == deviceID || senderID.length() < 17 || senderID.length() > 17) { //Check if sender is device & if ID is of valid length
+                    Serial.println("Ignoring self-received/invalid ack message"); 
+                } else {
+                    Serial.print("Received ACK from "); 
+                    Serial.println(senderID);
+            
+                    // Add/update route to sender if not already in table
+                    updateRoutingTable(senderID, senderID, 1);
+                }
+
+                radio.startReceive();
+                return;
             }
 
             //String senderID = incoming.substring(incoming.indexOf("ttgo-"));
@@ -659,8 +563,6 @@ void loop()
             if (senderID == deviceID) {
                 Serial.println("Ignoring self-received message");
             } else {
-                //adjustSpreadingFactor(rssiValue, snrValue); //TODO: Change instead of global sf change to per neighbor
-
                 // packet was successfully received
                 Serial.println(F("Radio Received packet!"));
 
@@ -691,6 +593,40 @@ void loop()
 
         radio.startReceive();
     }
+}
+
+void loop()
+{
+    unsigned long currentTime = millis();
+
+    // Send RDP only if the interval has passed (currently every 30s)
+    if (currentTime - lastRDPTime >= RDP_INTERVAL) {
+        lastRDPTime = currentTime;
+        broadcastRouteUpdate();
+    }
+  
+    // Process button press if the flag is set
+    if (buttonPressed) {
+        buttonPressed = false;  // Clear the flag
+        Serial.println("Button Pressed on IO38!");
+        setFlag();
+    }
+  
+    //MQTT
+    if (!client.connected()) {
+        reconnect();
+    }
+    client.loop();
+
+    // LoRa
+    // check if the previous transmission finished
+    if (transmittedFlag) {
+        // Set payload to our desired message
+        payload = deviceID + " | " + String(counter++);
+        sendLoraMessage(payload);
+    }
+
+    processIncomingMessage();
 }
 
 
