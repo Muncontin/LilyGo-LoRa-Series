@@ -131,7 +131,7 @@ static String deviceID;
 static String rssi = "0dBm";
 static String snr = "0dB";
 unsigned long lastRDPTime = 0; //Route Discovery packet
-const unsigned long RDP_INTERVAL = 30000;  // 30s interval
+const unsigned long RDP_INTERVAL = 60000;  // 30s interval
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -374,6 +374,15 @@ void setup()
     */
     delay(1000);
 
+    // start listening for LoRa packets
+    Serial.print(F("Radio Starting to listen ... "));
+    state = radio.startReceive();
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.println(F("success!"));
+    } else {
+        Serial.print(F("failed, code "));
+        Serial.println(state);
+    }
 }
 
 void printRoutingTable() {
@@ -401,10 +410,10 @@ void printRoutingTable() {
 
 
 void broadcastRouteUpdate() {
-    // Periodically sends a routing discovery packet to map out the mash network
+    // Periodically sends a routing discovery packet to map out the mesh network
     //RDP|<SenderID>
     
-    Serial.print("Broadcasting RDP");
+    Serial.println("Broadcasting RDP");
     // Advertise the existence of this node to all neighbors
     String routeMessage = "RDP|" + deviceID;
 
@@ -417,12 +426,12 @@ void processRouteUpdate(String payload) {
     String senderID = payload.substring(4); // Extract sender ID
 
     // Ensure we are not processing our own broadcast
-    if (senderID == deviceID && senderID.length() != 17) return;
+    if (senderID == deviceID) return;
 
-    // Update routing table (store sender as a direct neighbor with hop count 1)
-    updateRoutingTable(senderID, senderID, 1);
+    // Update routing table (store sender as a direct neighbor with hop count 0)
+    updateRoutingTable(senderID, senderID, 0);
 
-    Serial.print("Added route: ");
+    Serial.println("Added route: ");
     Serial.print(senderID);
     Serial.println(" via " + senderID);
 
@@ -464,45 +473,37 @@ bool isValidMessage(String message) {
 // Function to send a LoRa message "hello from ttgo"
 void sendLoraMessage(String message) {
 
-    int rssi = radio.getRSSI();
-
-
-    radio.standby();
-
     // Reset transmitted flag before sending
     transmittedFlag = false;
-    
+
     // Flash an LED to indicate activity (if implemented)
     flashLed();
-    
-    // Start transmission with the given payload
-    int transmissionState = radio.startTransmit(message.c_str());
     
     if (transmissionState == RADIOLIB_ERR_NONE) {
       Serial.println(F("Transmission finished!"));
       Serial.print(F("Sent message:\t\t"));
       Serial.println(message);
       // Optionally, publish the payload over MQTT as well
-      client.publish("ttgo/network", message.c_str());
+      //client.publish("ttgo/network", message.c_str());
     } else {
       Serial.print(F("Transmission failed, code "));
       Serial.println(transmissionState);
     }
 
-    message = "";
-    
+
     // Optionally add a delay before next transmission (if needed)
     delay(1000);
-    //setReceivedFlag();
-    radio.startReceive();
+
+    // Start transmission with the given payload
+    transmissionState = radio.startTransmit(message.c_str());
+
+    flashLed();
 }
 
 void processIncomingMessage() {
     if(receivedFlag) {
         // reset flag
         receivedFlag = false; //Ensures that the packet is only read once
-
-        flashLed();
 
         // you can read received data as an Arduino String
         int state = radio.readData(incoming);
@@ -523,37 +524,34 @@ void processIncomingMessage() {
             // Check if the message is completely empty
             if (incoming == "" || incoming.length() < 5) { 
                 Serial.println("Ignoring empty or very short message");
-                radio.startReceive();
                 return;
             }
 
             // Check if the message contains non-printable characters
             if (!isValidMessage(incoming)) {
                 Serial.println("Error: Garbled message detected, ignoring.");
-                radio.startReceive();
                 return;
             }
 
             if (incoming.startsWith("RDP|")) {
                 processRouteUpdate(incoming);
-                radio.startReceive();
                 return; //skip as its routing update
             }
 
             if (incoming.startsWith("RDP_ACK|")) {
                 String senderID = incoming.substring(8); // Extract sender ID
 
-                if (senderID == deviceID || senderID.length() < 17 || senderID.length() > 17) { //Check if sender is device & if ID is of valid length
+                if (senderID == deviceID || senderID.length() != 17) { //Check if sender is device & if ID is of valid length
                     Serial.println("Ignoring self-received/invalid ack message"); 
                 } else {
                     Serial.print("Received ACK from "); 
-                    Serial.println(senderID);
+                    Serial.print(senderID);
             
                     // Add/update route to sender if not already in table
                     updateRoutingTable(senderID, senderID, 1);
                 }
 
-                radio.startReceive();
+                //radio.startReceive();
                 return;
             }
 
